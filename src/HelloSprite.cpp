@@ -66,16 +66,31 @@ const GLchar *vertexShaderSource = R"(
 
 // Código fonte do Fragment Shader (em GLSL): ainda hardcoded
 const GLchar *fragmentShaderSource = R"(
- #version 400
- in vec2 tex_coord;
- out vec4 color;
- uniform sampler2D tex_buff;
- void main()
- {
-	 color = texture(tex_buff,tex_coord);
- }
- )";
+#version 400
+uniform vec4 inputColor;
+out vec4 color;
+void main()
+{
+	color = inputColor;
+}
+)";
 
+struct Triangle 
+{
+	vec3 position;
+	vec3 dimensions;
+	vec3 color;
+};
+
+vector<Triangle> triangles;
+
+int iColor = 0;
+
+vector<GLuint> VAOs;
+GLuint VAO;
+
+int conta = 0;
+float vetor[3][2] = {};
 // Função MAIN
 int main()
 {
@@ -191,6 +206,17 @@ int main()
 
 		glLineWidth(10);
 		glPointSize(20);
+
+		if (conta >= 3)
+		{
+			VAO = createTriangle(vetor[0][0], vetor[0][1], vetor[1][0], vetor[1][1], vetor[2][0], vetor[2][1]);
+			conta = 0;
+			float cor1 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+			float cor2 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+			float cor3 = static_cast<float>(std::rand()) / static_cast<float>(RAND_MAX);
+			glUniform4f(colorLoc, cor1,cor2, cor3, 1.0f); //enviando cor para variável uniform inputColor
+		}
+
 
 		glBindVertexArray(VAO); // Conectando ao buffer de geometria
 		glBindTexture(GL_TEXTURE_2D, texID); // Conectando ao buffer de textura
@@ -333,44 +359,20 @@ int setupSprite()
 	return VAO;
 }
 
-int loadTexture(string filePath)
+
+
+void mouse_button_callback(GLFWwindow* window, int button, int action, int mods)
 {
-	GLuint texID;
-
-	// Gera o identificador da textura na memória
-	glGenTextures(1, &texID);
-	glBindTexture(GL_TEXTURE_2D, texID);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
-
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-
-	int width, height, nrChannels;
-
-	unsigned char *data = stbi_load(filePath.c_str(), &width, &height, &nrChannels, 0);
-
-	if (data)
-	{
-		if (nrChannels == 3) // jpg, bmp
-		{
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-		}
-		else // png
-		{
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-		}
-		glGenerateMipmap(GL_TEXTURE_2D);
+    if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_PRESS)
+    {
+		double xpos, ypos;
+		glfwGetCursorPos(window, &xpos, &ypos);
+		cout << xpos << "  " << ypos << endl;
+		// Normalizando as coordenadas
+		xpos = ((xpos / 400) - 1);
+		ypos = ((ypos / 300) - 1) * -1;
+		vetor[conta][0] = xpos;
+		vetor[conta][1] = ypos;
+		conta++;
 	}
-	else
-	{
-		std::cout << "Failed to load texture" << std::endl;
-	}
-
-	stbi_image_free(data);
-
-	glBindTexture(GL_TEXTURE_2D, 0);
-
-	return texID;
 }
