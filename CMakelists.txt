@@ -61,6 +61,7 @@ set(EXERCISES
     Modulo2/Ex1Parte2M2
     Modulo3/M3JogoCores
     Modulo5/M5AnimatedSprite
+    GrauB/TarefaGrauB
     TarefaVivencialModulo2
     TarefaVivencialModulo4
     VivencialModulo6/TarefaVivencialModulo6
@@ -92,7 +93,7 @@ endif()
 foreach(EXERCISE ${EXERCISES})
     # Extrai o nome do arquivo sem o diretório para o executável
     get_filename_component(EXE_NAME ${EXERCISE} NAME)    
-    if(EXE_NAME STREQUAL "exemplo_07" OR EXE_NAME STREQUAL "TarefaVivencialModulo6")
+    if(EXE_NAME STREQUAL "exemplo_07" OR EXE_NAME STREQUAL "TarefaVivencialModulo6" OR EXE_NAME STREQUAL "TarefaGrauB")
         add_executable(${EXE_NAME}
             src/${EXERCISE}.cpp
             ${GLAD_C_FILE}
