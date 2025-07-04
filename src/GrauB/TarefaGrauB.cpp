@@ -1,370 +1,672 @@
-#include <assert.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <math.h>
-#include <string.h>
-#include <time.h>
-//#define GL_LOG_FILE "gl.log"
+#include <fstream>
+#include <sstream>
+#include <unordered_set>
+#include <string>
 #include <iostream>
 #include <vector>
-#include <fstream>
-
-
-#include <glad/glad.h> // Carregamento dos ponteiros para funções OpenGL
-
-// STB_IMAGE
+#include <windows.h>
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include <stb_image.h>
+#include <glm/glm.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/type_ptr.hpp>
 
-#include "gl_utils.h"
-#include "TileMap.h"
-#include "DiamondView.h"
-//#include "SlideView.h"
-#include "ltMath.h"
-#ifndef GL_TEXTURE_MAX_ANISOTROPY_EXT
-#define GL_TEXTURE_MAX_ANISOTROPY_EXT 0x84FE
-#endif
-
-#ifndef GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT
-#define GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT 0x84FF
-#endif
+using namespace glm;
 using namespace std;
 
+// Shaders em GLSL (vertex e fragment shader)
+const GLchar *vertexShaderSource = R"(
+ #version 400
+ layout (location = 0) in vec3 position;
+ layout (location = 1) in vec2 texc;
+ out vec2 tex_coord;
+ uniform mat4 model;
+ uniform mat4 projection;
+ void main()
+ {
+    tex_coord = vec2(texc.s, 1.0 - texc.t);
+    gl_Position = projection * model * vec4(position, 1.0);
+ }
+ )";
+
+const GLchar *fragmentShaderSource = R"(
+ #version 400
+ in vec2 tex_coord;
+ out vec4 color;
+ uniform sampler2D tex_buff;
+ uniform vec2 offsetTex;
+
+ void main()
+ {
+     color = texture(tex_buff,tex_coord + offsetTex);
+ }
+ )";
+
+// Variáveis globais para janela e tamanho
+GLFWwindow* g_window = nullptr;
 int g_gl_width = 800;
-int g_gl_height = 800;
-float xi = -1.0f;
-float xf = 1.0f;
-float yi = -1.0f;
-float yf = 1.0f;
-float w = xf - xi;
-float h = yf - yi;
-float tw, th, tw2, th2;
-int tileSetCols = 7, tileSetRows = 1;
-float tileW, tileW2;
-float tileH, tileH2;
-int cx = -1, cy = -1;
-int posX = 0, posY = 0;
+int g_gl_height = 600;
 
-//TilemapView *tview = new DiamondView();
-TilemapView *tview = new DiamondView();
-TileMap *tmap = NULL;
-
-GLFWwindow *g_window = NULL;
-
-TileMap * readMap (const char *filename) {
-	ifstream arq(filename);
-    if (!arq.is_open()) {
-        cout << "Erro ao abrir o arquivo: " << filename << endl;
-        exit(1);
-    }
-    int w, h;
-    arq >> w >> h;
-	cout << w << endl;
-	cout << h << endl;
-    TileMap *tmap = new TileMap(w, h, 0);
-    for(int r = 0; r < h; r++) {
-		for(int c = 0; c < w; c++) {
-			int tid;
-            arq >> tid;
-            cout << tid << " ";
-            tmap->setTile(c, h-r-1, tid);
-        }
-        cout << endl;
-    }
-	arq.close();
-    return tmap;
-}
-
-int loadTexture(unsigned int &texture, const char *filename)
+// Estrutura do personagem
+struct Personagem
 {
-	glGenTextures(1, &texture);
-	glBindTexture(GL_TEXTURE_2D, texture);
+    GLuint VAO;
+    vec3 position;
+    vec3 dimensions;
+    float ds, dt;
+    int nAnimations, nFrames;
+    int iAnimation, iFrame;
+};
 
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+// Estrutura para montagem dos tiles do mapa
+struct MontagemTiles
+{
+    int qtdSprites;
+    int tileWidth, tileHeight;
+    int linhas, colunas;
+    vector<int> matrizTiles; // Mapa linearizado
+};
 
-	GLfloat max_aniso = 0.0f;
-	glGetFloatv(GL_MAX_TEXTURE_MAX_ANISOTROPY_EXT, &max_aniso);
-	// set the maximum!
-	glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_MAX_ANISOTROPY_EXT, max_aniso);
+// Tipos de tile possíveis
+enum class Tipo
+{
+    Normal,
+    Morre,
+    NaoCaminhavel,
+};
 
-	int width, height, nrChannels;
+// Estrutura de um tile
+struct Tile
+{
+    GLuint VAO;
+    GLuint texID;
+    int iTile;
+    vec3 position;
+    vec3 dimensions;
+    float ds, dt;
+    Tipo tipo;
+};
 
-	unsigned char *data = stbi_load(filename, &width, &height, &nrChannels, 0);
-	if (data)
-	{
-		if (nrChannels == 4)
-		{
-			cout << "Alpha channel" << endl;
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
-		}
-		else
-		{
-			cout << "Without Alpha channel" << endl;
-			glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
-		}
-		glGenerateMipmap(GL_TEXTURE_2D);
-		stbi_image_free(data);
-		return 1; // sucesso
-	}
-	else
-	{
-		std::cout << "Failed to load texture" << std::endl;
-		return 0; // falha
-	}
-	cout << "Erro nao era aqui" << endl;
-}
+// Estrutura de uma moeda
+struct Coin
+{
+    int i, j;		
+    bool collected; 
+    GLuint texID;
+};
 
-void SRD2SRU(double &mx, double &my, float &x, float &y) {
-	x = xi + (mx / g_gl_width ) * w;
-	y = yi + (1 - (my / g_gl_height)) * h;
-}
+// Variáveis globais do jogo
+MontagemTiles montagemTiles;
+vector<Tile> tileset;
+int personagemPosX = 0, personagemPosY = 0;
+GLuint WIDTH = 800, HEIGHT = 600;
 
+vector<Coin> coins;
+int moedasColetadas = 0;
+int totalMoedas = 0;
 
-void processKeyboard() {
-    bool moved = false;
-	int c = posX;
-	int r = posY;
+// Declaração de funções
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode);
+int setupShader();
+int setupSprite(int nAnimations, int nFrames, float &ds, float &dt);
+bool montaTiles(const string &arquivo, MontagemTiles &montagemTiles);
+bool carregaTipo(const string &arquivo, vector<Tipo> &tipoTile);
+int setupTile(int qtdSprites, float &ds, float &dt);
+int loadTexture(string filePath, int &width, int &height);
+void montaTerreno(GLuint shaderID, float x0, float y0);
+void defineMoedas(const string &mapaPath, GLuint texCoin);
+void colocaMoedas(GLuint shaderID, float x0, float y0, const vector<Coin> &coins);
 
-    if (glfwGetKey(g_window, GLFW_KEY_W) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_NORTH);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_S) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_SOUTH);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_A) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_WEST);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_D) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_EAST);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_Q) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_NORTHWEST);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_E) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_NORTHEAST);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_Z) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_SOUTHWEST);
-        moved = true;
-    }
-    if (glfwGetKey(g_window, GLFW_KEY_C) == GLFW_PRESS) {
-        tview->computeTileWalking(c, r, DIRECTION_SOUTHEAST);
-        moved = true;
-    }
-	
-	if (moved) {
-		cout << "posX=" << c << " posY=" << r << endl;
-		// Atualiza a posição do tile selecionado
-		if (c < 0 || c >= tmap->getWidth() || r < 0 || r >= tmap->getHeight()) {
-			return; // Posição inválida
-		}
-		posX = c;
-		posY = r;
-	}
-}
 int main()
 {
-	cout << "Iniciando log..." << endl;
-	restart_gl_log();
-	// all the GLFW and GLEW start-up code is moved to here in gl_utils.cpp
-	cout << "Iniciando OpenGL..." << endl;
-	start_gl();
-	// tell GL to only draw onto a pixel if the shape is closer to the viewer
-	glEnable(GL_DEPTH_TEST); // enable depth-testing
-	glDepthFunc(GL_LESS);
+    srand(glfwGetTime());
 
-    cout << "Tentando criar tmap..." << endl;
-    tmap = readMap("C:/projeto_java/PGCCHIB/src/GrauB/terrain1.tmap");
-    posX = tmap->getWidth() / 2;
-	posY = tmap->getHeight() / 2;
-	tw = w / (float)tmap->getWidth();
-    th = tw / 2.0f;
-    tw2 = th;
-    th2 = th / 2.0f;
-    tileW = 1.0f / (float) tileSetCols;
-    tileW2 = tileW / 2.0f;
-    tileH = 1.0f / (float) tileSetRows;
-    tileH2 = tileH / 2.0f;
-    
-    cout << "tw=" << tw << " th=" << th << " tw2=" << tw2 << " th2=" << th2
-        << " tileW=" << tileW << " tileH=" << tileH
-        << " tileW2=" << tileW2 << " tileH2=" << tileH2
-    << endl;
+    string erros;
+    // Carrega informações dos tiles do arquivo
+    if (!montaTiles("../src/GrauB/tileVals.txt", montagemTiles))
+    {
+        return -1;
+    }
+    int margem = 40;
+    // Calcula tamanho do mapa em pixels (isométrico)
+    int mapaWidthPx  = (montagemTiles.colunas + montagemTiles.linhas) * montagemTiles.tileWidth  / 2;
+    int mapaHeightPx = (montagemTiles.colunas + montagemTiles.linhas) * montagemTiles.tileHeight / 2;
+    WIDTH = mapaWidthPx + margem;
+    HEIGHT = mapaHeightPx + margem;
+    // Posição inicial do mapa na tela
+    float x0 = (montagemTiles.linhas - 1) * montagemTiles.tileWidth * 0.5f;
+    float y0 = (HEIGHT - mapaHeightPx) / 2.0f;
 
-	GLuint tid;
-	
-	if (!loadTexture(tid, "C:/projeto_java/PGCCHIB/assets/tilesets/tilesetIso.png")) {
-		cout << "Erro ao carregar textura!" << endl;
-		return 1;
-	}
+    // Inicializa GLFW e cria janela
+    glfwInit();
+    glfwWindowHint(GLFW_SAMPLES, 8);
+    GLFWwindow *window = glfwCreateWindow(WIDTH, HEIGHT, "Grau B", nullptr, nullptr);
 
-    tmap->setTid(tid);
-
-	// LOAD TEXTURES
-
-	// set up vertex data (and buffer(s)) and configure vertex attributes
-	// ------------------------------------------------------------------
-	float vertices[] = {
-		// positions   // texture coords
-		xi    , yi+th2, 0.0f, tileH2,   // left
-		xi+tw2, yi    , tileW2, 0.0f,   // bottom
-		xi+tw , yi+th2, tileW, tileH2,  // right
-		xi+tw2, yi+th , tileW2, tileH,  // top
-	};
-	unsigned int indices[] = {
-		0, 1, 3, // first triangle
-		3, 1, 2  // second triangle
-	};
-
-	unsigned int VBO, VAO, EBO;
-	glGenVertexArrays(1, &VAO);
-	glGenBuffers(1, &VBO);
-	glGenBuffers(1, &EBO);
-
-	glBindVertexArray(VAO);
-
-	glBindBuffer(GL_ARRAY_BUFFER, VBO);
-	glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
-
-	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, EBO);
-	glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices, GL_STATIC_DRAW);
-
-	// position attribute
-	glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)0);
-	glEnableVertexAttribArray(0);
-	// texture coord attribute
-	glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 4 * sizeof(float), (void *)(2 * sizeof(float)));
-	glEnableVertexAttribArray(1);
-
-    char vertex_shader[1024 * 256];
-	char fragment_shader[1024 * 256];
-	parse_file_into_str("C:/projeto_java/PGCCHIB/src/GrauB/_geral_vs.glsl", vertex_shader, 1024 * 256);
-	parse_file_into_str("C:/projeto_java/PGCCHIB/src/GrauB/_geral_fs.glsl", fragment_shader, 1024 * 256);
-
-	GLuint vs = glCreateShader(GL_VERTEX_SHADER);
-	const GLchar *p = (const GLchar *)vertex_shader;
-	glShaderSource(vs, 1, &p, NULL);
-	glCompileShader(vs);
-
-	// check for compile errors
-	int params = -1;
-	glGetShaderiv(vs, GL_COMPILE_STATUS, &params);
-	if (GL_TRUE != params)
-	{
-		fprintf(stderr, "ERROR: GL shader index %i did not compile\n", vs);
-		print_shader_info_log(vs);
-		return 1; // or exit or something
-	}
-
-	GLuint fs = glCreateShader(GL_FRAGMENT_SHADER);
-	p = (const GLchar *)fragment_shader;
-	glShaderSource(fs, 1, &p, NULL);
-	glCompileShader(fs);
-
-	// check for compile errors
-	glGetShaderiv(fs, GL_COMPILE_STATUS, &params);
-	if (GL_TRUE != params)
-	{
-		fprintf(stderr, "ERROR: GL shader index %i did not compile\n", fs);
-		print_shader_info_log(fs);
-		return 1; // or exit or something
-	}
-
-	GLuint shader_programme = glCreateProgram();
-	glAttachShader(shader_programme, fs);
-	glAttachShader(shader_programme, vs);
-	glLinkProgram(shader_programme);
-
-	glGetProgramiv(shader_programme, GL_LINK_STATUS, &params);
-	if (GL_TRUE != params)
-	{
-		fprintf(stderr, "ERROR: could not link shader programme GL index %i\n",
-				shader_programme);
-		// 		print_programme_info_log( shader_programme );
-		return false;
-	}
-
-	float previous = glfwGetTime();
-    
-    
-    for(int r = 0; r < tmap->getHeight(); r++) {
-        for(int c = 0; c < tmap->getWidth(); c++) {
-            unsigned char t_id = tmap->getTile(c, r);
-            cout << ((int)t_id) << " ";
-        }
-        cout << endl;
+    // Carrega tipos de tiles (Normal, Morre, NaoCaminhavel)
+    vector<Tipo> tipoTile(montagemTiles.qtdSprites, Tipo::Normal);
+    if (!carregaTipo("../src/GrauB/tileTipos.txt", tipoTile))
+    {
+        cerr << "Erro ao carregar tileTipos.txt" << endl;
+        return -1;
     }
 
-	glEnable (GL_BLEND);
-	glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-	// glEnable(GL_DEPTH_TEST);
-	while (!glfwWindowShouldClose(g_window))
-	{
-		_update_fps_counter(g_window);
-		double current_seconds = glfwGetTime();
+    if (!window)
+    {
+        std::cerr << "Falha ao criar a janela GLFW" << std::endl;
+        glfwTerminate();
+        return -1;
+    }
 
-		processKeyboard();
-		// wipe the drawing surface clear
-		glClearColor(0.2f, 0.3f, 0.3f, 1.0f);
-		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-		// glClear(GL_COLOR_BUFFER_BIT);
+    glfwMakeContextCurrent(window);
+    glfwSetKeyCallback(window, key_callback);
+    if (!gladLoadGLLoader((GLADloadproc)glfwGetProcAddress))
+    {
+        std::cerr << "Falha ao inicializar GLAD" << std::endl;
+        return -1;
+    }
 
-		glViewport(0, 0, g_gl_width, g_gl_height);
+    // Exibe informações do OpenGL
+    const GLubyte *renderer = glGetString(GL_RENDERER);
+    const GLubyte *version = glGetString(GL_VERSION);
+    cout << "Renderer: " << renderer << endl;
+    cout << "OpenGL version supported " << version << endl;
 
-		glUseProgram(shader_programme);
+    int width, height;
+    glfwGetFramebufferSize(window, &width, &height);
+    glViewport(0, 0, width, height);
 
-		glBindVertexArray(VAO);
-        float x, y;
-        int r = 0, c = 0;
-        for(int r = 0; r < tmap->getHeight(); r++) {
-            for(int c = 0; c < tmap->getWidth(); c++) {
-				int t_id;
-				if (posX == c && posY == r) {
-					t_id = 6;
-				} else {
-                	t_id = (int) tmap->getTile(c, r);
-				}
-                int u = t_id % tileSetCols;
-                int v = t_id / tileSetCols;
-                                
-                tview->computeDrawPosition(c, r, tw, th, x, y);
-                
-                glUniform1f(glGetUniformLocation(shader_programme, "offsetx"), u * tileW);
-                glUniform1f(glGetUniformLocation(shader_programme, "offsety"), v * tileH);
-                glUniform1f(glGetUniformLocation(shader_programme, "tx"), x);
-                glUniform1f(glGetUniformLocation(shader_programme, "ty"), y + 1.0);
-                glUniform1f(glGetUniformLocation(shader_programme, "layer_z"), tmap->getZ());                
-                glUniform1f(glGetUniformLocation(shader_programme, "weight"), (c == cx) && (r == cy) ? 0.5 : 0.0);                
-                
-                // bind Texture
-				glBindTexture(GL_TEXTURE_2D, tmap->getTileSet());
-                glUniform1i(glGetUniformLocation(shader_programme, "sprite"), 0);
-                glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, 0);
+    // Compila e linka shaders
+    GLuint shaderID = setupShader();
+
+    // Carrega texturas dos tiles e das moedas
+    int Width, Height;
+    GLuint texID = loadTexture("../assets/tilesets/tilesetIso.png", Width, Height);
+    GLuint texCoin = loadTexture("../assets/sprites/pila.png", Width, Height);
+
+    // Cria todos os tiles do tileset
+    for (int i = 0; i < montagemTiles.qtdSprites; ++i)
+    {
+        Tile tile;
+        tile.dimensions = vec3(montagemTiles.tileWidth, montagemTiles.tileHeight, 1.0);
+        tile.iTile = i;
+        tile.tipo = tipoTile[i];
+        tile.texID = texID;
+        tile.VAO = setupTile(montagemTiles.qtdSprites, tile.ds, tile.dt);
+        tileset.push_back(tile);
+    }
+
+    glUseProgram(shaderID);
+
+    // Variáveis para controle de FPS e animação
+    double prev_s = glfwGetTime();
+    double title_countdown_s = 0.1;
+    float colorValue = 0.0;
+    glActiveTexture(GL_TEXTURE0);
+    glUniform1i(glGetUniformLocation(shaderID, "tex_buff"), 0);
+    mat4 projection = ortho(0.0f, (float)WIDTH, (float)HEIGHT, 0.0f, -1.0f, 1.0f);
+    glUniformMatrix4fv(glGetUniformLocation(shaderID, "projection"), 1, GL_FALSE, value_ptr(projection));
+    glEnable(GL_DEPTH_TEST);
+    glDepthFunc(GL_ALWAYS);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+
+    // Carrega textura e inicializa personagem
+    GLuint texIDJogador = loadTexture("../assets/sprites/enemies-spritesheet1.png", Width, Height);
+    Personagem jogador;
+    jogador.dimensions = vec3(montagemTiles.tileWidth, montagemTiles.tileWidth, 1.0);
+    jogador.nAnimations = 12;
+    jogador.nFrames = 2;
+    jogador.iAnimation = 10;
+    jogador.iFrame = 0; 
+    jogador.VAO = setupSprite(jogador.nAnimations, jogador.nFrames, jogador.ds, jogador.dt); 
+    double atrasoTrocaFrame = 0;
+
+    double lastTime = glfwGetTime();
+    double deltaT = 0.0;
+    personagemPosX = 5;
+    personagemPosY = 5;
+    defineMoedas("../src/GrauB/moedas.txt", texCoin);
+
+    // Loop principal do jogo
+    while (!glfwWindowShouldClose(window))
+    {
+        {
+            // Atualiza título da janela periodicamente
+            double curr_s = glfwGetTime();
+            double elapsed_s = curr_s - prev_s;
+            prev_s = curr_s;
+
+            title_countdown_s -= elapsed_s;
+            if (title_countdown_s <= 0.0 && elapsed_s > 0.0)
+            {
+                double fps = 1.0 / elapsed_s;
+
+                char tmp[256];
+                sprintf(tmp, "Áron Ritter - Grau B");
+                glfwSetWindowTitle(window, tmp);
+                title_countdown_s = 0.1;
             }
-            
         }
 
-		glfwPollEvents();
-		if (GLFW_PRESS == glfwGetKey(g_window, GLFW_KEY_ESCAPE))
-		{
-			glfwSetWindowShouldClose(g_window, 1);
-		}
-		// put the stuff we've been drawing onto the display
-		glfwSwapBuffers(g_window);
-	}
+        glfwPollEvents();
 
-	// close GL context and any other GLFW resources
-	glfwTerminate();
-    delete tmap;
-	return 0;
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+        glLineWidth(10);
+        glPointSize(20);
+
+        // Controle de animação do personagem
+        double currTime = glfwGetTime();
+        deltaT = currTime - lastTime;
+        lastTime = currTime;
+
+        atrasoTrocaFrame += deltaT;
+        int auxFrame = jogador.iFrame;
+        if (atrasoTrocaFrame > 0.2) 
+        {
+            auxFrame++;
+            if (auxFrame > 2)
+                auxFrame = 0;
+            jogador.iFrame = auxFrame;
+            atrasoTrocaFrame = 0;
+        }
+
+        // Desenha o terreno e as moedas
+        montaTerreno(shaderID, x0, y0);
+        colocaMoedas(shaderID, x0, y0, coins);
+
+        // Pega o tile atual do personagem
+        Tile tileAtual = tileset[montagemTiles.matrizTiles[personagemPosX * montagemTiles.colunas + personagemPosY]];
+
+        // Calcula posição isométrica do personagem
+        float x = x0 + (personagemPosY - personagemPosX) * tileAtual.dimensions.x / 2.0f;
+        float y = y0 + (personagemPosY + personagemPosX) * tileAtual.dimensions.y / 2.0f;
+
+        // Monta matriz de transformação do personagem
+        mat4 model = mat4(1.0);
+        model = translate(model, vec3(x + tileAtual.dimensions.x / 2.0, y + tileAtual.dimensions.y / 2.0 - jogador.dimensions.y / 2.0, 0));
+        model = scale(model, jogador.dimensions);
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderID, "model"), 1, GL_FALSE, value_ptr(model));
+
+        // Define o recorte do frame do personagem na spritesheet
+        vec2 offsetTex;
+        offsetTex.s = jogador.iFrame * jogador.ds;
+        offsetTex.t = 1.0 - jogador.dt;
+        glUniform2f(glGetUniformLocation(shaderID, "offsetTex"), offsetTex.s, offsetTex.t);
+
+        // Desenha o personagem
+        glBindVertexArray(jogador.VAO);
+        glBindTexture(GL_TEXTURE_2D, texIDJogador);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+
+        // Verifica se a moeda foi coletada e adiciona pontuação
+        for (auto &moeda : coins)
+        {
+            if (!moeda.collected && moeda.i == personagemPosX && moeda.j == personagemPosY)
+            {
+                moeda.collected = true;
+                moedasColetadas++;
+            }
+        }
+
+        // Verifica se todas as moedas foram coletadas
+        if (moedasColetadas == totalMoedas && totalMoedas > 0)
+        {
+            cout << "Você ganhou!" << endl;
+            glfwSetWindowShouldClose(window, GL_TRUE);
+        }
+
+        glfwSwapBuffers(window);
+    }
+
+    glfwTerminate();
+    return 0;
+}
+
+// Função de callback para teclas (movimentação do personagem)
+void key_callback(GLFWwindow *window, int key, int scancode, int action, int mode)
+{
+    int c = 0, r = 0;
+    if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
+        glfwSetWindowShouldClose(window, GL_TRUE);
+    
+    // Movimentação isométrica (WASD + QEZXC)
+    if (key == GLFW_KEY_W && action == GLFW_PRESS) { c = -1; r = -1; }
+    if (key == GLFW_KEY_S && action == GLFW_PRESS) { c = +1; r = +1; }
+    if (key == GLFW_KEY_A && action == GLFW_PRESS) { c = +1; r = -1; }
+    if (key == GLFW_KEY_D && action == GLFW_PRESS) { c = -1; r = +1; }
+    if (key == GLFW_KEY_Z && action == GLFW_PRESS) { c = +1; r = 0; }
+    if (key == GLFW_KEY_X && action == GLFW_PRESS) { c = 0; r = +1; }
+    if (key == GLFW_KEY_Q && action == GLFW_PRESS) { c = 0; r = -1; }
+    if (key == GLFW_KEY_E && action == GLFW_PRESS) { c = -1; r = 0; }
+
+    int destinoI = personagemPosX + c;
+    int destinoJ = personagemPosY + r;
+
+    // Verifica se o movimento é válido e executa
+    if (destinoI >= 0 && destinoI < montagemTiles.linhas && destinoJ >= 0 && destinoJ < montagemTiles.colunas)
+    {
+        int tileID = montagemTiles.matrizTiles[destinoI * montagemTiles.colunas + destinoJ];
+        Tipo tipoTile = tileset[tileID].tipo;
+
+        switch (tipoTile)
+        {
+        case Tipo::Normal:
+            personagemPosX = destinoI;
+            personagemPosY = destinoJ;
+            break;
+        case Tipo::NaoCaminhavel:
+            break;
+        case Tipo::Morre:
+            cout << "Você caiu na lava e MORREU!" << endl;
+            glfwSetWindowShouldClose(window, GL_TRUE);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+// Compila e linka shaders
+int setupShader()
+{
+    GLuint vertexShader = glCreateShader(GL_VERTEX_SHADER);
+    glShaderSource(vertexShader, 1, &vertexShaderSource, NULL);
+    glCompileShader(vertexShader);
+    GLint success;
+    GLchar infoLog[512];
+    glGetShaderiv(vertexShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(vertexShader, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::VERTEX::COMPILATION_FAILED\n"
+                  << infoLog << std::endl;
+    }
+    GLuint fragmentShader = glCreateShader(GL_FRAGMENT_SHADER);
+    glShaderSource(fragmentShader, 1, &fragmentShaderSource, NULL);
+    glCompileShader(fragmentShader);
+    glGetShaderiv(fragmentShader, GL_COMPILE_STATUS, &success);
+    if (!success)
+    {
+        glGetShaderInfoLog(fragmentShader, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::FRAGMENT::COMPILATION_FAILED\n"
+                  << infoLog << std::endl;
+    }
+    GLuint shaderProgram = glCreateProgram();
+    glAttachShader(shaderProgram, vertexShader);
+    glAttachShader(shaderProgram, fragmentShader);
+    glLinkProgram(shaderProgram);
+    glGetProgramiv(shaderProgram, GL_LINK_STATUS, &success);
+    if (!success)
+    {
+        glGetProgramInfoLog(shaderProgram, 512, NULL, infoLog);
+        std::cout << "ERROR::SHADER::PROGRAM::LINKING_FAILED\n"
+                  << infoLog << std::endl;
+    }
+    glDeleteShader(vertexShader);
+    glDeleteShader(fragmentShader);
+
+    return shaderProgram;
+}
+
+// Cria VAO para sprites animadas (personagem, moedas)
+int setupSprite(int nAnimations, int nFrames, float &ds, float &dt)
+{
+    ds = 1.0 / (float)nFrames;
+    dt = 1.0 / (float)nAnimations;
+
+    GLfloat vertices[] = {
+        -0.5, 0.5, 0.0, 0.0, 0.0,
+        -0.5, -0.5, 0.0, 0.0, dt,
+        0.5, 0.5, 0.0, ds, 0.0,
+        0.5, -0.5, 0.0, ds, dt};
+
+    GLuint VBO, VAO;
+    glGenBuffers(1, &VBO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glGenVertexArrays(1, &VAO);
+
+    glBindVertexArray(VAO);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid *)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid *)(3 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glBindVertexArray(0);
+
+    return VAO;
+}
+
+// Cria VAO para tiles isométricos
+int setupTile(int qtdSprites, float &ds, float &dt)
+{
+    ds = 1.0 / (float)qtdSprites;
+    dt = 1.0;
+
+    float th = 1.0, tw = 1.0;
+
+    GLfloat vertices[] = {
+        0.0, th / 2.0f, 0.0, 0.0, dt / 2.0f,
+        tw / 2.0f, th, 0.0, ds / 2.0f, dt,
+        tw / 2.0f, 0.0, 0.0, ds / 2.0f, 0.0,
+        tw, th / 2.0f, 0.0, ds, dt / 2.0f};
+
+    GLuint VBO, VAO;
+    glGenBuffers(1, &VBO);
+    glBindBuffer(GL_ARRAY_BUFFER, VBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+
+    glGenVertexArrays(1, &VAO);
+
+    glBindVertexArray(VAO);
+
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid *)0);
+    glEnableVertexAttribArray(0);
+
+    glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 5 * sizeof(GLfloat), (GLvoid *)(3 * sizeof(GLfloat)));
+    glEnableVertexAttribArray(1);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+
+    glBindVertexArray(0);
+
+    return VAO;
+}
+
+// Carrega textura de arquivo
+int loadTexture(string filePath, int &width, int &height)
+{
+    GLuint texID;
+
+    glGenTextures(1, &texID);
+    glBindTexture(GL_TEXTURE_2D, texID);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+
+    int nrChannels;
+
+    unsigned char *data = stbi_load(filePath.c_str(), &width, &height, &nrChannels, 0);
+
+    if (data)
+    {
+        if (nrChannels == 3)
+        {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB, width, height, 0, GL_RGB, GL_UNSIGNED_BYTE, data);
+        }
+        else
+        {
+            glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+        }
+        glGenerateMipmap(GL_TEXTURE_2D);
+    }
+    else
+    {
+        std::cout << "Failed to load texture" << std::endl;
+    }
+
+    stbi_image_free(data);
+
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    return texID;
+}
+
+// Desenha o terreno (tiles) na tela
+void montaTerreno(GLuint shaderID, float x0, float y0)
+{
+    for (int i = 0; i < montagemTiles.linhas; i++)
+    {
+        for (int j = 0; j < montagemTiles.colunas; j++)
+        {
+            mat4 model = mat4(1);
+
+            Tile tileAtual = tileset[montagemTiles.matrizTiles[i * montagemTiles.colunas + j]];
+            if (i == personagemPosX && j == personagemPosY)
+                tileAtual = tileset[6];
+
+            float x = x0 + (j - i) * tileAtual.dimensions.x / 2.0f;
+            float y = y0 + (j + i) * tileAtual.dimensions.y / 2.0f;
+
+            model = translate(model, vec3(x, y, 0.0));
+            model = scale(model, tileAtual.dimensions);
+            glUniformMatrix4fv(glGetUniformLocation(shaderID, "model"), 1, GL_FALSE, value_ptr(model));
+
+            vec2 offsetTex;
+
+            offsetTex.s = tileAtual.iTile * tileAtual.ds;
+            offsetTex.t = 0.0;
+            glUniform2f(glGetUniformLocation(shaderID, "offsetTex"), offsetTex.s, offsetTex.t);
+
+            glBindVertexArray(tileAtual.VAO);
+            glBindTexture(GL_TEXTURE_2D, tileAtual.texID);
+
+            glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+        }
+    }
+}
+
+// Lê arquivo de moedas e inicializa vetor de moedas
+void defineMoedas(const string &path, GLuint texCoin)
+{
+    coins.clear();
+    ifstream file(path);
+    int linhas, colunas;
+    file >> linhas >> colunas; 
+    int possuiCoin;
+    
+    for (int i = 0; i < linhas; ++i) {
+        for (int j = 0; j < colunas; ++j) {
+            file >> possuiCoin;
+            if (possuiCoin == 1) {
+                coins.push_back({i, j, false, texCoin});
+            }
+        }
+    }
+    totalMoedas = coins.size();
+    cout << "Total de moedas: " << totalMoedas << endl;
+}
+
+// Desenha as moedas na tela
+void colocaMoedas(GLuint shaderID, float x0, float y0, const vector<Coin> &coins)
+{
+    // Define tamanho e outras propriedades da moeda
+    vec3 dimensoesMoeda = vec3(montagemTiles.tileWidth * 0.4f, montagemTiles.tileHeight * 0.9f, 1.0f);
+    float ds = 1.0;
+    float dt = 1.0;
+
+    static GLuint coinVAO = setupSprite(1, 1, ds, dt); // Uma sprite estática (1x1)
+
+    glBindVertexArray(coinVAO);
+
+    for (const auto &moeda : coins)
+    {
+        if (moeda.collected)
+            continue;
+
+        Tile tileAtual = tileset[montagemTiles.matrizTiles[moeda.i * montagemTiles.colunas + moeda.j]];
+
+        float x = x0 + (moeda.j - moeda.i) * tileAtual.dimensions.x / 2.0f;
+        float y = y0 + (moeda.j + moeda.i) * tileAtual.dimensions.y / 2.0f;
+
+        mat4 model = mat4(1.0);
+        model = translate(model, vec3(x + tileAtual.dimensions.x / 2.0f, y + tileAtual.dimensions.y / 2.0f - dimensoesMoeda.y / 2.0f, 0.1f));
+        model = scale(model, dimensoesMoeda);
+
+        glUniformMatrix4fv(glGetUniformLocation(shaderID, "model"), 1, GL_FALSE, value_ptr(model));
+
+        // Usando o canto superior esquerdo da textura da moeda
+        glUniform2f(glGetUniformLocation(shaderID, "offsetTex"), 0.0f, 1.0f - dt);
+
+        // IMPORTANTE: Vincula a textura da moeda!
+        glBindTexture(GL_TEXTURE_2D, moeda.texID);
+        glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    }
+
+    glBindVertexArray(0);
+}
+
+// Lê arquivo de tiles e monta o mapa
+bool montaTiles(const string &arquivo, MontagemTiles &montagemTiles)
+{
+    int v;
+    vector<int> matrizTiposTiles;
+    
+    ifstream file(arquivo);
+    file >> montagemTiles.qtdSprites >> montagemTiles.tileWidth >> montagemTiles.tileHeight
+         >> montagemTiles.linhas >> montagemTiles.colunas;
+ 
+    for (int i = 0; i < montagemTiles.linhas; ++i) {
+        for (int j = 0; j < montagemTiles.colunas; ++j) {
+            file >> v;
+            matrizTiposTiles.push_back(v);
+        }
+    }
+
+    montagemTiles.matrizTiles.swap(matrizTiposTiles);
+
+    return true;
+    
+}
+
+// Lê arquivo de tipos de tile e preenche vetor de tipos
+bool carregaTipo(const string &arquivo, vector<Tipo> &tipoTile)
+{
+    int tipoCount = 0;
+    int aux;
+    ifstream file(arquivo);
+    while (tipoCount < 3)
+    {
+        file >> aux;
+        if (aux == 9){
+            tipoCount++;
+        } else {
+            switch (tipoCount)
+            {
+                case 0:
+                    tipoTile[aux] = Tipo::Normal;
+                    break;
+                case 1: 
+                    tipoTile[aux] = Tipo::NaoCaminhavel;
+                    break;
+                case 2:
+                    tipoTile[aux] = Tipo::Morre;
+                    break;
+            }
+        }
+    }
+    return true;
 }
